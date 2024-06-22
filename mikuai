@@ -1,0 +1,446 @@
+Private Function GetShapeRangeToDeal() As ShapeRange
+    Set GetShapeRangeToDeal = New ShapeRange
+    If Me.GroupSelection.Value Then
+        If ActiveSelectionRange.Count > 0 Then
+            Set GetShapeRangeToDeal = Application.ActiveSelectionRange
+        End If
+    Else
+        Dim L As Layer, CheckHidden As Boolean
+        CheckHidden = False
+        Set GetShapeRangeToDeal = ActiveDocument.ActivePage.Shapes.All
+        For Each L In ActiveDocument.ActivePage.Layers
+            If Not L.Visible Then
+                CheckHidden = True
+                Exit For
+            End If
+        Next L
+        '全部排出不可见图层对象
+        If CheckHidden Then 'And MsgBox("检测到隐藏图层，是否群组隐藏图层对象？", vbYesNo) = vbNo
+            For Each L In ActiveDocument.ActivePage.Layers
+                If Not L.Visible Then
+                    GetShapeRangeToDeal.RemoveRange L.Shapes.All
+                    'Debug.Print GetShapeRangeToDeal.Count
+                End If
+            Next L
+        End If
+        
+        '排除锁定
+        If Me.UnlockedShp.Value Then
+            GetShapeRangeToDeal.RemoveRange ActiveDocument.ActivePage.Shapes.FindShapes(query:="@com.Locked = 1").All
+        Else
+            With GetShapeRangeToDeal.Shapes.FindShapes(query:="@com.Locked = 1").All
+                .Unlock
+            End With
+        End If
+    End If
+End Function
+Function GroupMultipleBoundingboxIntersect(ShpRng As ShapeRange, Rc#, CDRDoc As Document) As ShapeRange
+    Dim L#, b#, T#, R#, W#, H#
+    Dim Shp As Shape, InsShp As Shape, TempShpRng As New ShapeRange, GrpRng As New ShapeRange
+    On Error GoTo ErrorLine
+    If ShpRng.Count = 0 Then Exit Function
+    'Dim ExcludeRng As New ShapeRange '排除未被选中的对象对框选结果的影响
+    'ExcludeRng.AddRange CDRDoc.ActivePage.Shapes.All
+    'ExcludeRng.RemoveRange ShpRng
+    Set GroupMultipleBoundingboxIntersect = New ShapeRange
+    RemoveGuidLines ShpRng
+    Do While ShpRng.Count > 0
+        Set Shp = GetSameLevelFirst(ShpRng, LT_H) 'ShpRng.Shapes(1)
+        Shp.GetBoundingBox L, b, W, H
+        R = L + W: T = b + H
+        Set TempShpRng = SelectRect(ShpRng, L - Rc, T + Rc, R + Rc, b - Rc, True, False) 'CDRDoc.ActivePage.SelectShapesFromRectangle(L - Rc, T + Rc, R + Rc, B - Rc, True).Shapes.All
+        'TempShpRng.RemoveRange ExcludeRng
+        ShpRng.RemoveRange TempShpRng
+        GrpRng.AddRange TempShpRng
+        Do While TempShpRng.Count > 0
+            GrpRng.GetBoundingBox L, b, W, H
+            R = L + W: T = b + H
+            Set TempShpRng = SelectRect(ShpRng, L - Rc, T + Rc, R + Rc, b - Rc, True, False) ' CDRDoc.ActivePage.SelectShapesFromRectangle(L - Rc, T + Rc, R + Rc, B - Rc, True).Shapes.All
+            'TempShpRng.RemoveRange ExcludeRng
+            ShpRng.RemoveRange TempShpRng
+            TempShpRng.RemoveRange GrpRng
+            GrpRng.AddRange TempShpRng
+        Loop
+        GroupMultipleBoundingboxIntersect.Add GrpRng.Group
+        Set Shp = Nothing
+        Set GrpRng = Nothing
+        Set TempShpRng = Nothing
+    Loop
+ErrorLine:
+    Set Shp = Nothing
+    Set GrpRng = Nothing
+    Set TempShpRng = Nothing
+End Function
+Function GroupSingleBoundingboxIntersect(ShpRng As ShapeRange, Rc#, CDRDoc As Document) As ShapeRange
+    Dim L#, b#, T#, R#, W#, H#
+    Dim LS$, BS$, TS$, RS$
+    Dim Shp As Shape, InsShp As Shape, TempShpRng As New ShapeRange, InsShpRng As New ShapeRange, GrpRng As New ShapeRange, TempIncludeRng  As New ShapeRange
+    Dim CQLIns$
+    On Error GoTo ErrorLine
+    If ShpRng.Count = 0 Then Exit Function
+    RemoveGuidLines ShpRng
+    Set GroupSingleBoundingboxIntersect = New ShapeRange
+    Do While ShpRng.Count > 0
+        Set Shp = GetSameLevelFirst(ShpRng, LT_H) ' ShpRng.Shapes(1)
+        Shp.GetBoundingBox L, b, W, H
+        R = L + W: T = b + H
+        '与当前shape相交或包含的所有对象
+        Set GrpRng = SelectRect(ShpRng, L - Rc, T + Rc, R + Rc, b - Rc, True, False)   'CDRDoc.ActivePage.SelectShapesFromRectangle(L - Rc, T + Rc, R + Rc, B - Rc, True).Shapes.All
+        ShpRng.RemoveRange GrpRng
+        Set InsShpRng = New ShapeRange
+        InsShpRng.AddRange GrpRng
+        InsShpRng.RemoveRange SelectRect(GrpRng, L - Rc, T + Rc, R + Rc, b - Rc, False, False)
+        If InsShpRng.Count > 0 Then
+            Do While InsShpRng.Count > 0
+                Set TempIncludeRng = New ShapeRange
+                Set InsShp = GetSameLevelFirst(InsShpRng, LT_H) 'InsShpRng.Shapes(1)
+                TempIncludeRng.Add InsShp
+                InsShpRng.RemoveRange TempIncludeRng
+                 'Debug.Print InsShpRng.Count
+                InsShp.GetBoundingBox L, b, W, H
+                R = L + W: T = b + H
+                '原始和相交range中找需要被排除出去的shape
+                Set TempShpRng = SelectRect(ShpRng, L - Rc, T + Rc, R + Rc, b - Rc, True, False)
+                If TempShpRng.Count > 0 Then
+                    GrpRng.AddRange TempShpRng
+                    ShpRng.RemoveRange TempShpRng
+                    TempIncludeRng.AddRange SelectRect(TempShpRng, L - Rc, T + Rc, R + Rc, b - Rc, False, False)
+                   
+                    InsShpRng.RemoveRange TempIncludeRng
+                    TempShpRng.RemoveRange TempIncludeRng
+                    InsShpRng.AddRange TempShpRng
+                End If
+            Loop
+        End If
+        If GrpRng.Count = 1 Then
+            GroupSingleBoundingboxIntersect.Add GrpRng.Shapes(1)
+        Else
+            If GrpRng.Count > 1 Then
+                GroupSingleBoundingboxIntersect.Add GrpRng.Group
+            End If
+        End If
+    Loop
+ErrorLine:
+    Set InsShpRng = Nothing
+    Set GrpRng = Nothing
+    Set TempShpRng = Nothing
+End Function
+
+
+Public Sub RemoveGuidLines(ShpRng As ShapeRange)
+    '排除辅助线,桌面的辅助线可能会和某个页面的辅助线同时被选中
+    With ShpRng
+        .RemoveRange ShpRng.Shapes.FindShapes(query:="@Type = 'guideline'")  'CDRDoc.ActivePage.GuidesLayer.Shapes.All
+        '.RemoveRange CDRDoc.Pages(0).GuidesLayer.Shapes.All
+    End With
+End Sub
+
+Public Function SelectRect(ShpRng As ShapeRange, L#, T#, R#, b#, Touch As Boolean, Optional IterateAll As Boolean = True) As ShapeRange
+    Dim LS$, BS$, TS$, RS$, CQL$
+    LS = IIf(L >= 0, "{0" & L & " mm}", "-{0" & Abs(L) & " mm}")
+    TS = IIf(T >= 0, "{0" & T & " mm}", "-{0" & Abs(T) & " mm}")
+    BS = IIf(b >= 0, "{0" & b & " mm}", "-{0" & Abs(b) & " mm}")
+    RS = IIf(R >= 0, "{0" & R & " mm}", "-{0" & Abs(R) & " mm}")
+    If Touch Then
+        CQL = "not (@bottom-" & TS & ">={0.001mm} or @top-" & BS & "<=-{0.001mm} or @right-" & LS & "<=-{0.001mm} or @left-" & RS & ">={0.001mm})"
+    Else
+        CQL = "@bottom-" & BS & ">=-{0.001mm} and  @top-" & TS & "<={0.001mm} and @right-" & RS & "<={0.001mm} and @left-" & LS & ">=-{0.001mm}"
+    End If
+    Set SelectRect = ShpRng.Shapes.FindShapes(recursive:=IterateAll, query:=CQL)
+End Function
+
+Public Function GetSameLevelFirst(ShpRng As ShapeRange, SM As ScanMode, Optional Rc# = 0.1) As Shape
+    Dim CQL$, LS$, TS$, BS$, RS$
+    Dim RefA#, RefB#, RefAS$, RefBS$, RefC#, RefCS$
+    Dim TempRngSameLevel   As New ShapeRange
+    Dim RemoveRng As New ShapeRange
+    Dim Shp As Shape
+    Dim L#, T#, b#, R#
+    Set Shp = GetFirstReferenceShapeByScanMode(ShpRng, SM)
+    
+    With Shp
+    '.CreateSelection
+        L = .LeftX
+        T = .TopY
+        b = .BottomY
+        R = .RightX
+    End With
+    LS = IIf(L + Rc >= 0, "{" & VBA.Format(L + Rc, "0.000") & " mm}", "-{" & VBA.Format(Abs(L + Rc), "0.000") & " mm}")
+    TS = IIf(T - Rc >= 0, "{" & VBA.Format(T - Rc, "0.000") & " mm}", "-{" & VBA.Format(Abs(T - Rc), "0.000") & " mm}")
+    BS = IIf(b + Rc >= 0, "{" & VBA.Format(b + Rc, "0.000") & " mm}", "-{" & VBA.Format(Abs(b + Rc), "0.000") & " mm}")
+    RS = IIf(R - Rc >= 0, "{" & VBA.Format(R - Rc, "0.000") & " mm}", "-{" & VBA.Format(Abs(R - Rc), "0.000") & " mm}")
+    Select Case SM
+        Case LT_V
+            CQL = "not(@right<=" & LS & " or @left>=" & RS & ")"
+            CQL = CQL & " and @top>=" & TS
+        Case LT_H
+            CQL = "not(@Top<=" & BS & " or @bottom>=" & TS & ")"
+            CQL = CQL & " and @left<=" & LS
+        Case RT_V
+            CQL = "not(@right<=" & LS & " or @left>=" & RS & ")"
+            CQL = CQL & " and @top>=" & TS
+        Case RT_H
+            CQL = "not(@Top<=" & BS & " or @bottom>=" & TS & ")"
+            CQL = CQL & " and @right>=" & RS
+        Case LB_V
+            CQL = "not (@right<=" & LS & " or @left>=" & RS & ")"
+            CQL = CQL & " and @bottom<=" & BS
+        Case LB_H
+            CQL = "not(@Top<=" & BS & " or @bottom>=" & TS & ")"
+            CQL = CQL & " and @left<=" & LS
+        Case RB_V
+            CQL = "not(@right<=" & LS & " or @left>=" & RS & ")"
+            CQL = CQL & " and @bottom<=" & BS
+        Case RB_H
+            CQL = "not(@Top<=" & BS & " or @bottom>=" & TS & ")"
+            CQL = CQL & " and @right>=" & RS
+    End Select
+    '查找领先于参考shape的同级别的shape
+    Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:=CQL, recursive:=False)
+    '没有找到
+    If TempRngSameLevel.Count = 0 Then
+        Set GetSameLevelFirst = Shp
+    Else
+        '找到了很多，就判断这些shape中哪个是最领先的
+        Do While TempRngSameLevel.Count > 0
+            Set Shp = GetFirstShapeSameLevelByScanMode(TempRngSameLevel, SM)
+            RemoveRng.Add Shp
+            TempRngSameLevel.RemoveRange RemoveRng
+            Select Case SM
+                Case LT_V
+                    RefA = Shp.LeftX
+                    RefB = Shp.TopY
+                    RefC = Shp.BottomY
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "(@left<" & RefAS & " and @top<=" & RefBS & " and @top>=" & RefCS & ") or @top>" & RefBS
+                    
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                       ' Shp.CreateSelection
+                        Exit Do
+                    End If
+                Case LT_H
+                    RefA = Shp.LeftX
+                    RefB = Shp.TopY
+                    RefC = Shp.RightX
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "@left<" & RefAS & " or (@top>" & RefBS & " and @left>=" & RefAS & " and @left<=" & RefCS & ")"
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+                Case RT_V
+                    RefA = Shp.RightX
+                    RefB = Shp.TopY
+                    RefC = Shp.BottomY
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "(@right>" & RefAS & " and @top<=" & RefBS & " and @top>=" & RefCS & ")  or @top>" & RefBS
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+                Case RT_H
+                    RefA = Shp.RightX
+                    RefB = Shp.TopY
+                    RefC = Shp.LeftX
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "@right>" & RefAS & " or (@top>" & RefBS & " and @right<=" & RefAS & " and @right>=" & RefCS & ")"
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+                Case LB_V
+                    RefA = Shp.LeftX
+                    RefB = Shp.BottomY
+                    RefC = Shp.TopY
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "(@left<" & RefAS & " and @bottom<=" & RefCS & " and @bottom>=" & RefBS & ")" & " or @bottom<" & RefBS
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+                Case LB_H
+                    RefA = Shp.LeftX
+                    RefB = Shp.BottomY
+                    RefC = Shp.RightX
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "@left<" & RefAS & " or (@bottom<" & RefBS & " and @left>=" & RefAS & " and @left<=" & RefCS & ")"
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+                Case RB_V
+                    RefA = Shp.RightX
+                    RefB = Shp.BottomY
+                    RefC = Shp.TopY
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "(@right>" & RefAS & " and @bottom<=" & RefCS & " and @bottom>=" & RefBS & ") or @bottom<" & RefBS
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+                Case RB_H
+                    RefA = Shp.RightX
+                    RefB = Shp.BottomY
+                    RefC = Shp.LeftX
+                    RefAS = IIf(RefA >= 0, "{" & VBA.Format(RefA, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefA), "0.000") & " mm}")
+                    RefBS = IIf(RefB >= 0, "{" & VBA.Format(RefB, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefB), "0.000") & " mm}")
+                    RefCS = IIf(RefC >= 0, "{" & VBA.Format(RefC, "0.000") & " mm}", "-{" & VBA.Format(Abs(RefC), "0.000") & " mm}")
+                    CQL = "@right>" & RefAS & " or (@bottom<" & RefBS & " and @right<=" & RefAS & " and @right>=" & RefCS & ")"
+                    If TempRngSameLevel.Shapes.FindShapes(query:=CQL, recursive:=False).Count = 0 Then
+                        Set GetSameLevelFirst = Shp
+                        Exit Do
+                    End If
+            End Select
+        Loop
+    End If
+    Set TempRngSameLevel = Nothing
+    Set RemoveRng = Nothing
+    Set Shp = Nothing
+End Function
+
+Public Function GetFirstReferenceShapeByScanMode(ShpRng As ShapeRange, SM As ScanMode) As Shape
+    Dim RLA#, RLB#, SL#, RefLine$, StartLine$
+    Dim TempRngSameLevel As ShapeRange
+    Select Case SM
+        Case LT_V
+            RLA = ShpRng.LeftX
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@Left-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.TopY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@top-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case LT_H
+            RLA = ShpRng.TopY
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@top-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.LeftX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@left-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case RT_V
+            RLA = ShpRng.RightX
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@right-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.TopY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@top-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case RT_H
+            RLA = ShpRng.TopY
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@top-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.RightX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@right-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case LB_V
+            RLA = ShpRng.LeftX
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@Left-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.BottomY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@bottom-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case LB_H
+            RLA = ShpRng.BottomY
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@bottom-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.LeftX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@left-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case RB_V
+            RLA = ShpRng.RightX
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@right-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.BottomY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@bottom-" & StartLine & ").value.abs<=0.001", recursive:=False)
+        Case RB_H
+            RLA = ShpRng.BottomY
+            RefLine = IIf(RLA >= 0, "{0" & RLA & " mm}", "-{0" & Abs(RLA) & " mm}")
+            Set TempRngSameLevel = ShpRng.Shapes.FindShapes(query:="(@bottom-" & RefLine & ").value.abs<=0.001", recursive:=False)
+            SL = TempRngSameLevel.RightX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            Set GetFirstReferenceShapeByScanMode = TempRngSameLevel.Shapes.FindShape(query:="(@right-" & StartLine & ").value.abs<=0.001", recursive:=False)
+    End Select
+End Function
+Public Function GetFirstShapeSameLevelByScanMode(ShpRng As ShapeRange, SM As ScanMode) As Shape
+    Dim SL#, StartLine$, CQL$
+    Select Case SM
+        Case LT_V
+            SL = ShpRng.TopY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@top-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case LT_H
+            SL = ShpRng.LeftX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@left-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case RT_V
+            SL = ShpRng.TopY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@top-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case RT_H
+            SL = ShpRng.RightX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@right-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case LB_V
+            SL = ShpRng.BottomY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@bottom-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case LB_H
+            SL = ShpRng.LeftX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@left-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case RB_V
+            SL = ShpRng.BottomY
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@bottom-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+        Case RB_H
+            SL = ShpRng.RightX
+            StartLine = IIf(SL >= 0, "{0" & SL & " mm}", "-{0" & Abs(SL) & " mm}")
+            CQL = "(@right-" & StartLine & ").value.abs<=0.001"
+            Set GetFirstShapeSameLevelByScanMode = ShpRng.Shapes.FindShape(query:=CQL)
+    End Select
+End Function
+
+Public Function AutoMsgbox(txt As String, Optional buttons As VbMsgBoxStyle = vbOKOnly + vbInformation, Optional cap As String, Optional Timeout As Long = 2000)
+    Dim xRet As Long
+        xRet = MsgBoxTimeout(0, txt, cap, buttons, 1, Timeout)
+End Function
+
+Public Function BeginOpt(Name As String)
+    EventsEnabled = False
+    ActiveDocument.BeginCommandGroup Name
+    ActiveDocument.SaveSettings
+    ActiveDocument.Unit = cdrMillimeter
+    Optimization = True
+'    ActiveDocument.PreserveSelection = False
+End Function
+
+Public Function EndOpt()
+'    ActiveDocument.PreserveSelection = True
+    ActiveDocument.RestoreSettings
+    EventsEnabled = True
+    Optimization = False
+    EventsEnabled = True
+    Application.Refresh
+    ActiveDocument.EndCommandGroup
+End Function
